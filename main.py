@@ -139,9 +139,9 @@ def main(args):
         stats = np.zeros((len(dataloader.dataset), 3))
 
         with torch.no_grad():
-            for i, minibatch in enumerate(dataloader, 0):                
+            for i, data in enumerate(dataloader, 0):                
                 
-                posit_err, orient_err, runtime = test_step(data, mapper, encoder, pose_loss, device)
+                posit_err, orient_err, runtime = test_step(data, mapper, encoder, device)
                 # Collect statistics
                 stats[i, 0] = posit_err.item()
                 stats[i, 1] = orient_err.item()
@@ -176,11 +176,10 @@ def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=N
     
     if align_loss is not None:
         features_sim_mat = get_sim_mat(res["features"], nn.CosineSimilarity(dim=1, eps=1e-6), fill_val=-2)
-        est_pose_sim_mat = get_sim_mat(est_poses, pose_loss, is_sim=False)
-        
-        poses_sim_mat = nn.Sofmax(get_sim_mat(poses, pose_loss, is_sim=False), dim=1)
+        poses_sim_mat = get_sim_mat(poses, pose_loss, is_sim=False).softmax(dim=1)
         alignment_criterion = align_loss(features_sim_mat, poses_sim_mat)
         if align_poses:
+            est_pose_sim_mat = get_sim_mat(est_poses, pose_loss, is_sim=False)
             pose_alignment_loss = align_loss(est_pose_sim_mat, poses_sim_mat)
             alignment_criterion = alignment_criterion + pose_alignment_loss
         ret_val["align_loss"] = alignment_criterion.item()
@@ -211,14 +210,9 @@ def get_sim_mat(x, metric, is_sim=True, fill_val=None):
     return sim_mat
     
 
-def test_step(data, mapper, encoder, pose_loss, device):
-    poses = data.get('pose').to(dtype=torch.float32)
+def test_step(data, mapper, encoder, device):
+    poses = data.get('pose').to(dtype=torch.float32).to(device)
     imgs = data.get('img').to(device)
-
-    # Forward pass to predict the pose
-    
-    poses = data['pose']
-    imgs = data['img'].to(device)
     batch_size = poses.shape[0]
 
     tic = time.time()
@@ -226,7 +220,7 @@ def test_step(data, mapper, encoder, pose_loss, device):
     toc = time.time()
 
     # Evaluate error
-    posit_err, orient_err = utils.pose_err(res["est_poses"], poses)
+    posit_err, orient_err = utils.pose_err(res["pose"], poses)
     return posit_err, orient_err, (toc-tic)*1000
 
 

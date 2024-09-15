@@ -1,6 +1,6 @@
 {	
 	"n_workers": 4,
-	"device_id": "cuda:0",
+	"device_id": "cuda:1",
 	
 	
 	"training":
@@ -14,18 +14,18 @@
 		},
 		"align_loss":
 		{
-			"enable": false,
+			"enable": true,
 			"alpha": 1.0
 		},
 		"lr": 1e-3,
 		"batch_size": 8,
 		"n_freq_print": 5,
-		"n_freq_checkpoint": 30,
+		"n_freq_checkpoint": 10,
 		"weight_decay": 1e-5,
 		"eps": 1e-10,
 		"lr_scheduler_gamma": 0.1,
 		"lr_scheduler_step_size": 10,
-		"n_epochs": 100
+		"n_epochs": 30
 	},
 	"encoder":
 	{
