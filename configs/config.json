@@ -2,24 +2,30 @@
 	"n_workers": 4,
 	"device_id": "cuda:0",
 	
-	"pose_loss":
-	{
-		"learnable": true,
-		"s_x": -3.0,
-		"s_q": -6.5,
-		"norm": 2
-	},
+	
 	"training":
 	{
+		"pose_loss":
+		{
+			"learnable": true,
+			"s_x": -3.0,
+			"s_q": -6.5,
+			"norm": 2
+		},
+		"align_loss":
+		{
+			"enable": false,
+			"alpha": 1.0
+		},
 		"lr": 1e-3,
 		"batch_size": 8,
 		"n_freq_print": 5,
-		"n_freq_checkpoint": 10,
+		"n_freq_checkpoint": 30,
 		"weight_decay": 1e-5,
 		"eps": 1e-10,
 		"lr_scheduler_gamma": 0.1,
 		"lr_scheduler_step_size": 10,
-		"n_epochs": 30
+		"n_epochs": 100
 	},
 	"encoder":
 	{
@@ -32,9 +38,10 @@
 	},
 	"mapper":
 	{
-		"mlp_dims":[1024, 20],
+		"mlp_dims":[1024, 512, 256],
 		"mlp_dropout": 0.1,
 		"orientation_representation":"quat"
 	}
+	
 }
 

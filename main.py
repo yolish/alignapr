@@ -11,7 +11,7 @@ from util import utils
 import time
 from datasets.CameraPoseDataset import CameraPoseDataset
 from models.losses import CameraPoseLoss
-from models.align2apr import Mapper, align_to_apr
+from models.align2apr import Mapper, align_to_apr, get_encoder
 from os.path import join
 
 
@@ -19,7 +19,6 @@ def main(args):
     utils.init_logger()
 
     # Record execution details
-    logging.info("Start {} with {}".format(args.model_name, args.mode))
     if args.experiment is not None:
         logging.info("Experiment details: {}".format(args.experiment))
     logging.info("Using dataset: {}".format(args.dataset_path))
@@ -46,12 +45,12 @@ def main(args):
 
     # Set the encoder 
     #TODO: make configurable to use b2q (cvpr2024) and others 
-    encoder = torch.hub.load("gmberton/eigenplaces", "get_trained_model", backbone="ResNet50", fc_output_dim=config["encoder"]["output_dim"])
-    
+    encoder, output_dim = get_encoder(config["encoder"])
+    encoder.to(device)
     # Initialize the alignment model
     mapper_config = config["mapper"]
-    mapper["input_dim"] = config["encoder"]["output_dim"]
-    mapper = Mapper(config).to(device)
+    mapper_config["input_dim"] = output_dim
+    mapper = Mapper(mapper_config).to(device)
     # Load the checkpoint if needed
     if args.checkpoint_path:
         mapper.load_state_dict(torch.load(args.checkpoint_path, map_location=device_id))
@@ -62,20 +61,21 @@ def main(args):
         mapper.train()
 
         # Set the loss
-        pose_loss = CameraPoseLoss(config["pose_loss"]).to(device)
-        align_loss = None
         train_config = config["training"]
-        if train_config["align"]:
+        pose_loss = CameraPoseLoss(train_config["pose_loss"]).to(device)
+        align_loss = None
+        alpha = 1.0
+        if train_config["align_loss"]["enable"]:
             align_loss = nn.CrossEntropyLoss()
-            alpha = train_config["alpha"]
+            alpha = train_config["align_loss"]["alpha"]
         
         # Set the optimizer and scheduler
         params = list(mapper.parameters()) + list(pose_loss.parameters())
-        optim = torch.optim.Adam(filter(lambda p: p.requires_grad, params),
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, params),
                                   lr=train_config['lr'],
                                   eps=train_config['eps'],
                                   weight_decay=train_config['weight_decay'])
-        scheduler = torch.optim.lr_scheduler.StepLR(optim,
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                                     step_size=train_config['lr_scheduler_step_size'],
                                                     gamma=train_config['lr_scheduler_gamma'])
 
@@ -95,26 +95,21 @@ def main(args):
         # Train
         checkpoint_prefix = join(utils.create_output_dir('out'),utils.get_stamp_from_log())
         n_total_samples = 0.0
-        loss_vals = []
-        sample_count = []
+        logging.info("Start training")
         for epoch in range(n_epochs):
-
-            # Resetting temporal loss used for logging
-            running_loss = 0.0
-            n_samples = 0
             for batch_idx, data in enumerate(dataloader):
                 # TODO connect to tensor board or wandb 
-                res = train_step()
+                res = train_step(data, mapper, encoder, optimizer, 
+                                 pose_loss, device, align_loss, alpha)
 
                 # Record loss and performance on train set
                 if batch_idx % n_freq_print == 0:
                     batch_loss = res["total_loss"]
-                    epoch_loss += res["total_loss"]
                     # TODO add alignment and pose loss 
                     posit_err, orient_err = utils.pose_err(res["est_poses"], res["poses"])
-                    logging.info("[Batch-{}/Epoch-{}] batch loss: {:.3f}, epoch loss: {:.3f},"
+                    logging.info("[Batch-{}/Epoch-{}] batch loss: {:.3f}, "
                                     "camera pose error: {:.2f}[m], {:.2f}[deg]".format(
-                                                                        batch_idx+1, epoch+1, batch_loss, epoch_loss,
+                                                                        batch_idx+1, epoch+1, batch_loss,
                                                                         posit_err.mean().item(),
                                                                         orient_err.mean().item()))
             # Save checkpoint
@@ -123,6 +118,9 @@ def main(args):
 
             # Scheduler update
             scheduler.step()
+        
+        torch.save(mapper.state_dict(), checkpoint_prefix + '_last.pth')
+
 
     else: # Test
         # Set to eval mode
@@ -158,7 +156,7 @@ def main(args):
         logging.info("Mean inference time:{:.2f}[ms]".format(np.mean(stats[:, 2])))
 
 def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=None, alpha=1.0):
-    poses = data['pose']
+    poses = data['pose'].to(device).to(dtype=torch.float32)
     imgs = data['img'].to(device)
     batch_size = poses.shape[0]
 
@@ -174,8 +172,8 @@ def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=N
                 "pose_loss":pose_criterion.item()}
     
     if align_loss is not None:
-        features_sim_mat = get_features_sim_mat(res["features"])
-        poses_sim_mat = get_pose_sim_mat(poses, pose_loss)
+        features_sim_mat = get_sim_mat(res["features"], nn.CosineSimilarity(dim=1, eps=1e-6), fill_val=-2)
+        poses_sim_mat = get_sim_mat(poses, pose_loss, is_sim=False)
         alignment_criterion = align_loss(features_sim_mat, poses_sim_mat)
         ret_val["align_loss"] = alignment_criterion.item()
         criterion = pose_criterion + alpha*alignment_criterion
@@ -189,22 +187,21 @@ def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=N
     optimizer.step()
     return ret_val
 
-def get_features_sim_mat(features):
-    # TODO extend to other similarity metrics
-    cos = nn.CosineSimilarity(dim=1, eps=1e-6)
-    sim_mat = cos(features, features)
-    sim_mat.fill_diagonal_(-2)
-    return sim_mat
-
-
-def get_pose_sim_mat(poses, pose_loss):
-    n = poses.shape[0]
-    sim_mat = torch.zeros((n,n)).astype(poses.dtype).to(poses.device)
+def get_sim_mat(x, metric, is_sim=True, fill_val=None):
+    n = x.shape[0]
+    sign = 1.0
+    if not is_sim:
+        sign = -1.0 
+    sim_mat = torch.zeros((n,n)).to(x.dtype).to(x.device)
     with torch.no_grad():
         for i in range(n):
-            sim_mat[i, :] = -pose_loss(poses[i].repeat(n), poses)
-    sim_mat.fill_diagonal_(torch.min(sim_mat))
+            sim_mat[i, :] = sign*metric(x[i].repeat(n,1), x)
+    if fill_val is None:
+        sim_mat.fill_diagonal_(torch.min(sim_mat))
+    else:
+        sim_mat.fill_diagonal_(fill_val)
     return sim_mat
+    
 
 def test_step(data, mapper, encoder, pose_loss, device):
     poses = data.get('pose').to(dtype=torch.float32)
