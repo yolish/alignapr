@@ -1,1 +1,4 @@
 C:\ProgramData\anaconda3\python.exe main.py train F:\CambridgeLandmarks\ShopFacade F:\CambridgeLandmarks\ShopFacade\GT_ShopFacade_train.csv configs\config.json
+
+C:\ProgramData\anaconda3\python.exe main.py test F:\CambridgeLandmarks\ShopFacade F:\CambridgeLandmarks\ShopFacade\GT_ShopFacade_test.csv configs\config.json
+--checkpoint_path run_15_09_24_13_22_checkpoint-30.pth

@@ -47,6 +47,7 @@ def main(args):
     #TODO: make configurable to use b2q (cvpr2024) and others 
     encoder, output_dim = get_encoder(config["encoder"])
     encoder.to(device)
+    encoder.eval()
     # Initialize the alignment model
     mapper_config = config["mapper"]
     mapper_config["input_dim"] = output_dim
@@ -99,8 +100,9 @@ def main(args):
         for epoch in range(n_epochs):
             for batch_idx, data in enumerate(dataloader):
                 # TODO connect to tensor board or wandb 
+                # TODO read align poses from config
                 res = train_step(data, mapper, encoder, optimizer, 
-                                 pose_loss, device, align_loss, alpha)
+                                 pose_loss, device, align_loss, alpha, align_poses=False)
 
                 # Record loss and performance on train set
                 if batch_idx % n_freq_print == 0:
@@ -155,7 +157,8 @@ def main(args):
         logging.info("Median pose error: {:.3f}[m], {:.3f}[deg]".format(np.nanmedian(stats[:, 0]), np.nanmedian(stats[:, 1])))
         logging.info("Mean inference time:{:.2f}[ms]".format(np.mean(stats[:, 2])))
 
-def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=None, alpha=1.0):
+def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=None,
+               alpha=1.0, align_poses=False):
     poses = data['pose'].to(device).to(dtype=torch.float32)
     imgs = data['img'].to(device)
     batch_size = poses.shape[0]
@@ -173,8 +176,13 @@ def train_step(data, mapper, encoder, optimizer, pose_loss, device, align_loss=N
     
     if align_loss is not None:
         features_sim_mat = get_sim_mat(res["features"], nn.CosineSimilarity(dim=1, eps=1e-6), fill_val=-2)
-        poses_sim_mat = get_sim_mat(poses, pose_loss, is_sim=False)
+        est_pose_sim_mat = get_sim_mat(est_poses, pose_loss, is_sim=False)
+        
+        poses_sim_mat = nn.Sofmax(get_sim_mat(poses, pose_loss, is_sim=False), dim=1)
         alignment_criterion = align_loss(features_sim_mat, poses_sim_mat)
+        if align_poses:
+            pose_alignment_loss = align_loss(est_pose_sim_mat, poses_sim_mat)
+            alignment_criterion = alignment_criterion + pose_alignment_loss
         ret_val["align_loss"] = alignment_criterion.item()
         criterion = pose_criterion + alpha*alignment_criterion
     else:
